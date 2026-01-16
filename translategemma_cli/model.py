@@ -60,16 +60,21 @@ def get_backend() -> Backend:
     return "pytorch"
 
 
-def is_model_ready(model_size: str | None = None) -> bool:
+def is_model_ready(
+    model_size: str | None = None,
+    quantization_bits: int | None = None,
+) -> bool:
     """
     Check if the converted model exists.
     
     Args:
         model_size: Model size to check. If None, uses config default.
+        quantization_bits: Quantization level (4 or 8). If None, uses config default.
     """
     config = get_config()
     size = model_size or config.model_size
-    model_path = get_model_path(size, config.quantization_bits)
+    bits = config.quantization_bits if quantization_bits is None else quantization_bits
+    model_path = get_model_path(size, bits)
     
     if not model_path.exists():
         return False
@@ -102,7 +107,7 @@ def list_downloaded_models() -> list[dict]:
 
 def download_and_convert_model(
     model_size: str | None = None,
-    quantization_bits: int = 4,
+    quantization_bits: int | None = None,
     force: bool = False,
 ) -> Path:
     """
@@ -110,7 +115,7 @@ def download_and_convert_model(
     
     Args:
         model_size: Model size (4b, 12b, 27b). If None, uses config default.
-        quantization_bits: Quantization level (4 or 8)
+        quantization_bits: Quantization level (4 or 8). If None, uses config default.
         force: Force re-download and conversion even if model exists
         
     Returns:
@@ -118,27 +123,41 @@ def download_and_convert_model(
     """
     config = get_config()
     size = model_size or config.model_size
+    bits = config.quantization_bits if quantization_bits is None else quantization_bits
     
     if size not in MODEL_SIZES:
         console.print(f"[red]Invalid model size: {size}[/red]")
         console.print(f"[dim]Available sizes: {', '.join(MODEL_SIZES)}[/dim]")
         raise SystemExit(1)
     
-    model_path = get_model_path(size, quantization_bits)
+    if bits not in (4, 8):
+        console.print(f"[red]Invalid quantization bits: {bits}[/red]")
+        console.print("[dim]Available options: 4, 8[/dim]")
+        raise SystemExit(1)
+    
+    model_path = get_model_path(size, bits)
     hf_model_id = get_hf_model_id(size)
     
-    if is_model_ready(size) and not force:
+    if is_model_ready(size, bits) and not force:
         console.print(f"[green]Model already available at {model_path}[/green]")
         return model_path
+    
+    if model_path.exists() and not is_model_ready(size, bits):
+        # Remove incomplete conversions to avoid mlx failing on existing paths.
+        if model_path.is_dir():
+            import shutil
+            shutil.rmtree(model_path)
+        else:
+            model_path.unlink()
     
     console.print("[bold]Model not found locally.[/bold]\n")
     
     backend = get_backend()
     
     if backend == "mlx":
-        return _download_mlx(hf_model_id, model_path, quantization_bits)
+        return _download_mlx(hf_model_id, model_path, bits)
     else:
-        return _download_pytorch(hf_model_id, model_path, quantization_bits)
+        return _download_pytorch(hf_model_id, model_path, bits)
 
 
 def _download_mlx(hf_model_id: str, model_path: Path, quantization_bits: int) -> Path:
